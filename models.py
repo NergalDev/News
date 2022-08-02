@@ -1,94 +1,110 @@
-#from datetime import datetime
-#from resourses import TYPE_POST
 from django.db import models
 from django.contrib.auth.models import User
+from django.db.models import Sum
+from django.urls import reverse
 
-# Create your models here.
-#article = 'AR'
-#news = 'NW'
-#TYPE_POST = [
-#    (article, 'статья')
-#    (news, 'новость')
-#]
-
-#class User(AbstractUser):
-   # username = models.CharField(max_length=20, unique=True)
-    #email = models.EmailField(_('email adress', unique=True))
-   # password = models.CharField(max_length=255)
-    #registration = models.DateField(auto_now_add=True)
 
 class Author(models.Model):
+    """ Модель описывает Автора """
     user = models.OneToOneField(User, on_delete=models.CASCADE)
-    rating = models.IntegerField(default=0)
+    rating = models.SmallIntegerField(default=0)
+
+    def __repr__(self):
+        return f"Author (user.name='{self.user}', rating='{self.rating}')"
+
+    def __str__(self):
+        return f"{self.user}"
 
     def update_rating(self):
-        self.rating = 0
-        for post in self.post_set.all():
-            self.rating += post.rating * 3
-            for other_comment in post.comment_set.exclude(author__username=self.user.username):
-                self.rating += other_comment.rating
-        for comment in self.user.comment_set.all():
-            self.rating += comment.rating
+        """
+            суммарный рейтинг каждой статьи автора умножается на 3;
+            суммарный рейтинг всех комментариев автора;
+            суммарный рейтинг всех комментариев к статьям автора.
+        """
+        posts_rating = self.posts.aggregate(result=Sum('rating')).get('result')
+        comments_rating = self.user.comments.aggregate(result=Sum('rating')).get('result')
+        print(f"===== {self.user}: обновляем рейтинг автора =====")
+        print(f"Рейтинг постов = {posts_rating}")
+        print(f"Рейтинг комментов = {comments_rating}")
+        self.rating = 3 * posts_rating + comments_rating
         self.save()
+        print(f"Рейтинг = 3 * {posts_rating} + {comments_rating} = {self.rating}")
+
 
 class Category(models.Model):
-    category_name = models.CharField(max_length=25, unique=True)
+    """ Категории новостей / статей — темы, которые
+        они отражают(спорт, политика, образование и т.д.).
+        Здесь категории, то же что тэги. Их можно добавлять любое количество."""
+    name = models.CharField(unique=True, max_length=128)
+
+    def __repr__(self):
+        return f"Category (name='{self.name}')"
+
+    def __str__(self):
+        return f"{self.name}"
 
 
 class Post(models.Model):
-    post_type = models.CharField(max_length=2, choices=TYPE_POST)
-    post_tytle = models.CharField(max_length=100)
-    post = models.TextField()
-    post_author = models.ForeignKey(Author, on_delete=models.CASCADE)
-    post_category = models.ManyToManyField(Category, through='PostCategory')
-    post_creations = models.DateTimeField(auto_now_add=True)
-    post_rating = models.IntegerField(default=0, db_column='post_rating')
-    #post_rating = models.IntegerField(default=0)
+    """ Модель содержит в себе статьи и новости, которые создают пользователи.
+        Каждый объект может иметь одну или несколько категорий. """
+    NEWS = 'NW'
+    ARTICLE = 'AR'
+    CATEGORY_CHOISES = (
+        (NEWS, 'Новость'),
+        (ARTICLE, 'Статья'),
+    )
 
+    author = models.ForeignKey(Author, on_delete=models.CASCADE, related_name='posts')
+    date_time = models.DateTimeField(auto_now_add=True)
+    post_type = models.CharField(max_length=2, choices=CATEGORY_CHOISES, default=ARTICLE)
+    category = models.ManyToManyField(Category, through="PostCategory")
+    title = models.CharField(max_length=128)
+    text = models.TextField()
+    rating = models.SmallIntegerField(default=0)
 
-
-    @property
-    def get(self):
-        return self.post_rating
+    def __repr__(self):
+        return f"Post (author.user.name='{self.author.user}', title='{self.title}', rating='{self.rating}'," \
+               f"post_type='{self.post_type}')"
 
     def like(self):
-        self.post_rating += 1
-        Post.objects.filter(id=self.id).values('post_rating').update(post_rating='post_rating' + self.post_rating)
-
-
-    @like_post.setter
-   # def like(self):
-    #    self.post_rating =
-    def update_rating(self):
-        post_rating = sum(Post.objects.filter(author=self.user).values('post_rating')) * 3
-        comment_auth_rating = sum(Comment.objects.filter(user=self.user).values('comment_rating'))
-        comment_post_rating = 0
-        post_auth = Post.objects.filter(author=self.user).values('id')
-        for id in post_auth:
-            comment_post_rating += sum(Comment.objects.filter(post=id).values('comment_rating'))
-        self.author_rating = post_rating + comment_auth_rating + comment_post_rating
-        Author.objects.filter(id=self.id).values('Author_rating').update(author_rating = self.author_rating)
-
-class PostCategory(models.Model):
-    with_post = models.ForeignKey(to='Post', on_delete=models.CASCADE)
-    with_category = models.ForeignKey(to='Category', on_delete=models.CASCADE)
-
-
-class Comment(models.Model):
-    author = models.ForeignKey(User, on_delete=models.CASCADE)
-    post = models.ForeignKey(Post, on_delete=models.CASCADE)
-    text = models.TextField()
-    timestamp = models.DateTimeField('Timestamp ', auto_now_add=True)
-    rating = models.IntegerField(default=0)
-
-    def like(self, amount=1):
-        self.rating += amount
+        """ Увеличить на единицу значение 'Post.rating'. """
+        self.rating += 1
         self.save()
 
     def dislike(self):
-        self.like(-1)
+        """ Уменьшить на единицу значение 'Post.rating'. """
+        self.rating -= 1
+        self.save()
 
-    def __str__(self):
-        return f'{self.author}: {self.text}'
+    def preview(self, length=124) -> str:
+        """ Вернуть превью статьи. """
+        return f"{self.text[:length]}..." if len(self.text) > length else self.text
+
+    def get_absolute_url(self):
+        """ Вернуть url, зарегистрированный для отображения одиночного товара """
+        return reverse('post_detail', args=[str(self.id)])
 
 
+class PostCategory(models.Model):
+    """ Промежуточная модель для связи «многие ко многим». """
+    post = models.ForeignKey(Post, on_delete=models.CASCADE)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE)
+
+
+class Comment(models.Model):
+    """ Под каждой новостью/статьёй можно оставлять комментарии. """
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name='comments')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='comments')
+    text = models.TextField()
+    date_time = models.DateTimeField(auto_now_add=True)
+    rating = models.IntegerField(default=0)
+
+    def like(self):
+        """ Увеличить на единицу значение 'Comment.rating'. """
+        self.rating += 1
+        self.save()
+
+    def dislike(self):
+        """ Уменьшить на единицу значение 'Comment.rating'. """
+        self.rating -= 1
+        self.save()
